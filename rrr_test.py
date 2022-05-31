@@ -13,6 +13,15 @@ USER_2_TOK = "syt_c2Vjb25k_ElKwbhaNqTgpfgFQcStD_2aiOcs"
 USER_2_HEADERS = {"Authorization": f"Bearer {USER_2_TOK}"}
 
 
+def _check_for_status(result):
+    # Similar to raise_for_status, but prints the error.
+    if 400 <= result.status_code:
+        error_msg = result.json()
+        result.raise_for_status()
+        print(error_msg)
+        exit(0)
+
+
 def _sync_and_show(room_id):
     print("Syncing . . .")
     result = requests.get(
@@ -20,7 +29,7 @@ def _sync_and_show(room_id):
         headers=USER_1_HEADERS,
         params={"filter": json.dumps({"room": {"timeline": {"limit": 30}}})},
     )
-    result.raise_for_status()
+    _check_for_status(result)
     sync_response = result.json()
 
     room = sync_response["rooms"]["join"][room_id]
@@ -73,14 +82,14 @@ def main():
         json={"visibility": "public", "name": f"Road to Nowhere ({monotonic()})"},
         headers=USER_2_HEADERS,
     )
-    result.raise_for_status()
+    _check_for_status(result)
     room_id = result.json()["room_id"]
 
     # Second user joins the room.
     result = requests.post(
         f"{HOMESERVER}/_matrix/client/v3/rooms/{room_id}/join", headers=USER_1_HEADERS
     )
-    result.raise_for_status()
+    _check_for_status(result)
 
     # Sync user 1.
     _sync_and_show(room_id)
@@ -103,7 +112,7 @@ def main():
                 },
                 headers=USER_2_HEADERS,
             )
-            result.raise_for_status()
+            _check_for_status(result)
             event_ids.append(result.json()["event_id"])
             sleep(1)
 
@@ -119,7 +128,7 @@ def main():
         headers=USER_2_HEADERS,
         json={},
     )
-    result.raise_for_status()
+    _check_for_status(result)
 
     _sync_and_show(room_id)
 
@@ -130,7 +139,7 @@ def main():
         headers=USER_1_HEADERS,
         json={},
     )
-    result.raise_for_status()
+    _check_for_status(result)
 
     _sync_and_show(room_id)
 
@@ -141,7 +150,7 @@ def main():
         headers=USER_1_HEADERS,
         json={},
     )
-    result.raise_for_status()
+    _check_for_status(result)
 
     _sync_and_show(room_id)
 
