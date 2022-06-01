@@ -1549,6 +1549,29 @@ class FederationEventHandler:
             calculated_auth_event_ids
         )
 
+        # log the differences
+
+        claimed_auth_event_map = {(e.type, e.state_key): e for e in claimed_auth_events}
+        calculated_auth_event_map = {
+            (e.type, e.state_key): e for e in calculated_auth_events
+        }
+        logger.info(
+            "event's auth_events are different to our calculated auth_events. "
+            "Claimed but not calculated: %s. Calculated but not claimed: %s",
+            {
+                k: v
+                for k, v in claimed_auth_event_map.items()
+                if k not in calculated_auth_event_map
+                or calculated_auth_event_map[k].event_id != v.event_id
+            },
+            {
+                k: v
+                for k, v in calculated_auth_event_map.items()
+                if k not in claimed_auth_event_map
+                or claimed_auth_event_map[k].event_id != v.event_id
+            },
+        )
+
         try:
             check_auth_rules_for_event(room_version_obj, event, calculated_auth_events)
         except AuthError as e:
