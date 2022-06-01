@@ -1575,7 +1575,11 @@ class FederationEventHandler:
         try:
             check_auth_rules_for_event(room_version_obj, event, calculated_auth_events)
         except AuthError as e:
-            logger.warning("Failed auth resolution for %r because %s", event, e)
+            logger.warning(
+                "While checking auth of %r against room state before the event: %s",
+                event,
+                e,
+            )
             context.rejected = RejectedReason.AUTH_ERROR
 
         return context
