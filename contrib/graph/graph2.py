@@ -14,22 +14,27 @@
 
 
 import argparse
-import cgi
+import html
 import datetime
 import json
 import sqlite3
 
 import pydot
 
-from synapse.events import FrozenEvent
+from synapse.api.room_versions import KNOWN_ROOM_VERSIONS
+from synapse.events import make_event_from_dict
 from synapse.util.frozenutils import unfreeze
 
 
 def make_graph(db_name, room_id, file_prefix, limit):
     conn = sqlite3.connect(db_name)
 
+    sql = "SELECT room_version FROM rooms WHERE room_id = ?"
+    c = conn.execute(sql, (room_id,))
+    room_version = KNOWN_ROOM_VERSIONS[c.fetchone()[0]]
+
     sql = (
-        "SELECT json FROM event_json as j "
+        "SELECT json, internal_metadata FROM event_json as j "
         "INNER JOIN events as e ON e.event_id = j.event_id "
         "WHERE j.room_id = ?"
     )
@@ -43,7 +48,7 @@ def make_graph(db_name, room_id, file_prefix, limit):
 
     c = conn.execute(sql, args)
 
-    events = [FrozenEvent(json.loads(e[0])) for e in c.fetchall()]
+    events = [make_event_from_dict(json.loads(e[0]), room_version, json.loads(e[1])) for e in c.fetchall()]
 
     events.sort(key=lambda e: e.depth)
 
@@ -78,15 +83,17 @@ def make_graph(db_name, room_id, file_prefix, limit):
             "Content: <b>%(content)s </b><br/>"
             "Time: <b>%(time)s </b><br/>"
             "Depth: <b>%(depth)s </b><br/>"
+            "Stream ordering: <b>%(stream_ordering)s </b><br/>"
             "State group: %(state_group)s<br/>"
             ">"
         ) % {
             "name": event.event_id,
             "type": event.type,
             "state_key": event.get("state_key", None),
-            "content": cgi.escape(content, quote=True),
+            "content": html.escape(content, quote=True),
             "time": t,
             "depth": event.depth,
+            "stream_ordering": event.internal_metadata.stream_ordering,
             "state_group": state_group,
         }
 
@@ -96,7 +103,7 @@ def make_graph(db_name, room_id, file_prefix, limit):
         graph.add_node(node)
 
     for event in events:
-        for prev_id, _ in event.prev_events:
+        for prev_id in event.prev_event_ids():
             try:
                 end_node = node_map[prev_id]
             except Exception:
