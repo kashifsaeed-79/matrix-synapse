@@ -2099,6 +2099,126 @@ class PersistEventsStore:
             ),
         )
 
+    def _update_receipts(
+        self, txn: LoggingTransaction, events: List[EventBase]
+    ) -> None:
+        # XXX This is probably slow...
+        # Find any receipt ranges that would be "broken" by this event.
+        sql = """
+        SELECT
+            stream_id,
+            receipts_ranged.room_id,
+            receipt_type,
+            user_id,
+            start_event_id,
+            end_event_id,
+            data,
+            start_event.topological_ordering,
+            end_event.topological_ordering
+        FROM receipts_ranged
+        LEFT JOIN events AS end_event ON (end_event.event_id = end_event_id)
+        LEFT JOIN events AS start_event ON (start_event.event_id = start_event_id)
+        WHERE
+            receipts_ranged.room_id = ? AND
+            (start_event.topological_ordering <= ? OR start_event_id IS NULL) AND
+            ? <= end_event.topological_ordering;
+        """
+        for event in events:
+            txn.execute(
+                sql,
+                (event.room_id, event.depth, event.depth),
+            )
+            receipts = txn.fetchall()
+
+            # Split each receipt in two by the new event.
+            for (
+                stream_id,
+                room_id,
+                receipt_type,
+                user_id,
+                start_event_id,
+                end_event_id,
+                data,
+                start_topological_ordering,
+                end_topological_ordering,
+            ) in receipts:
+                # Upsert the current receipt to give it a new endpoint as the
+                # latest event in the range before the new event.
+                sql = """
+                SELECT event_id FROM events
+                WHERE room_id = ? AND topological_ordering <= ? AND stream_ordering < ?
+                ORDER BY topological_ordering DESC, stream_ordering DESC LIMIT 1;
+                """
+                txn.execute(
+                    sql,
+                    (
+                        event.room_id,
+                        event.depth,
+                        event.internal_metadata.stream_ordering,
+                    ),
+                )
+                new_end_event_id = txn.fetchone()[0]  # XXX Can this be None?
+                # TODO Upsert?
+                self.db_pool.simple_delete_one_txn(
+                    txn, table="receipts_ranged", keyvalues={"stream_id": stream_id}
+                )
+                self.db_pool.simple_insert_txn(
+                    txn,
+                    table="receipts_ranged",
+                    values={
+                        "room_id": room_id,
+                        "user_id": user_id,
+                        "receipt_type": receipt_type,
+                        "start_event_id": start_event_id,
+                        "end_event_id": new_end_event_id,
+                        "stream_id": stream_id + 20000,  # XXX obvs
+                        "data": data,  # XXX Does it make sense to duplicate this?
+                    },
+                )
+
+                # Insert a new receipt with a start point as the first event after
+                # the new event and re-using the old endpoint.
+                sql = """
+                SELECT event_id FROM events
+                WHERE room_id = ? AND topological_ordering > ? AND stream_ordering < ?
+                ORDER BY topological_ordering, stream_ordering LIMIT 1;
+                """
+                txn.execute(
+                    sql,
+                    (
+                        event.room_id,
+                        event.depth,
+                        event.internal_metadata.stream_ordering,
+                    ),
+                )
+                row = txn.fetchone()
+                # If there's no events topologically after the end event, the
+                # second range is just for the single event.
+                if row is not None:
+                    new_start_event_id = row[0]
+                else:
+                    new_start_event_id = end_event_id
+                self.db_pool.simple_insert_txn(
+                    txn,
+                    table="receipts_ranged",
+                    values={
+                        "room_id": room_id,
+                        "user_id": user_id,
+                        "receipt_type": receipt_type,
+                        "start_event_id": new_start_event_id,
+                        "end_event_id": end_event_id,
+                        "stream_id": stream_id + 10000,  # XXX obvs
+                        "data": data,  # XXX Does it make sense to duplicate this?
+                    },
+                )
+
+                txn.call_after(
+                    self.store.invalidate_caches_for_receipt,
+                    room_id,
+                    receipt_type,
+                    user_id,
+                )
+
     def _set_push_actions_for_event_and_users_txn(
         self,
         txn: LoggingTransaction,
@@ -2150,6 +2270,7 @@ class PersistEventsStore:
                     for event in non_outlier_events
                 ),
             )
+            self._update_receipts(txn, non_outlier_events)
 
             room_to_event_ids: Dict[str, List[str]] = {}
             for e in non_outlier_events:
